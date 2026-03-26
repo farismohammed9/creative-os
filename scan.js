@@ -1,6 +1,8 @@
 export const config = {
   api: {
-    bodyParser: { sizeLimit: '4mb' },
+    bodyParser: {
+      sizeLimit: '1mb',
+    },
   },
 }
 
@@ -21,38 +23,43 @@ export default async function handler(req, res) {
     }
   }
 
-  const { url } = body
+  let { url } = body
   if (!url) return res.status(400).json({ error: 'url is required' })
 
-  // Clean the URL
-  const cleanUrl = url.startsWith('http') ? url : `https://${url}`
+  // Normalise URL
+  if (!url.startsWith('http')) url = `https://${url}`
 
   try {
-    // Fetch the website HTML
-    const siteRes = await fetch(cleanUrl, {
+    const siteRes = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; CreativeOS/1.0)',
-        'Accept': 'text/html',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-GB,en;q=0.9',
       },
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(12000),
+      redirect: 'follow',
     })
 
     if (!siteRes.ok) {
-      return res.status(400).json({ error: `Could not fetch ${cleanUrl} — status ${siteRes.status}` })
+      return res.status(400).json({ error: `Could not load ${url} — got ${siteRes.status}. Check the URL is correct and publicly accessible.` })
     }
 
     const html = await siteRes.text()
 
-    // Strip HTML tags, get readable text — limit to 8000 chars
     const text = html
-      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+      .replace(/<footer[\s\S]*?<\/footer>/gi, '')
       .replace(/<[^>]+>/g, ' ')
       .replace(/\s+/g, ' ')
       .trim()
-      .substring(0, 8000)
+      .substring(0, 6000)
 
-    // Now ask Claude to extract brand intelligence from the page text
+    if (text.length < 50) {
+      return res.status(400).json({ error: `Could not extract readable content from ${url}. The site may block scraping or require JavaScript.` })
+    }
+
     const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -62,11 +69,11 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        system: `You are a brand analyst. Extract brand intelligence from website content. Be specific and factual — only state what you can actually see on the page. Do not invent or assume.`,
+        max_tokens: 800,
+        system: 'You are a brand analyst extracting factual brand intelligence from website content. Only state what is actually visible on the page. Return ONLY a valid JSON object, no markdown, no backticks, no explanation.',
         messages: [{
           role: 'user',
-          content: `Website URL: ${cleanUrl}\n\nPage content:\n${text}\n\nExtract the following as a JSON object with these exact keys:\n{\n  "brand_name": "brand name if found",\n  "category": "what they sell",\n  "price_points": "price range and positioning based on any prices visible",\n  "tagline": "any tagline or hero copy",\n  "products": "key products or collections mentioned",\n  "tone": "tone of copy — formal, playful, luxury, etc",\n  "target_signals": "any signals about who the customer is",\n  "channels": "any social/channel mentions"\n}\n\nReturn ONLY the JSON object, no other text.`
+          content: `Website: ${url}\n\nContent:\n${text}\n\nExtract brand intelligence as JSON with these keys (use null if not found):\n{\n  "brand_name": null,\n  "category": null,\n  "products": null,\n  "price_range": null,\n  "market_position": null,\n  "copy_tone": null,\n  "tagline": null,\n  "customer_signals": null,\n  "social_channels": null\n}`,
         }],
       }),
     })
@@ -74,7 +81,7 @@ export default async function handler(req, res) {
     const raw = await claudeRes.text()
     let claudeData
     try { claudeData = JSON.parse(raw) } catch (e) {
-      return res.status(500).json({ error: `Claude parse error: ${raw.substring(0, 200)}` })
+      return res.status(500).json({ error: `Claude response error: ${raw.substring(0, 150)}` })
     }
 
     if (!claudeRes.ok) {
@@ -82,22 +89,23 @@ export default async function handler(req, res) {
     }
 
     const extracted = claudeData.content?.[0]?.text || ''
-
     let parsed = {}
     try {
-      // Extract JSON from response
       const match = extracted.match(/\{[\s\S]*\}/)
       if (match) parsed = JSON.parse(match[0])
     } catch (e) {
       parsed = { raw: extracted }
     }
 
-    return res.status(200).json({ data: parsed, url: cleanUrl })
+    // Remove null values
+    Object.keys(parsed).forEach(k => { if (parsed[k] === null || parsed[k] === 'null') delete parsed[k] })
+
+    return res.status(200).json({ data: parsed, url })
 
   } catch (err) {
-    if (err.name === 'TimeoutError') {
-      return res.status(408).json({ error: `Website took too long to respond — try again or enter details manually` })
+    if (err.name === 'TimeoutError' || err.name === 'AbortError') {
+      return res.status(408).json({ error: `${url} took too long to respond. Try entering details manually.` })
     }
-    return res.status(500).json({ error: err.message || 'Failed to scan website' })
+    return res.status(500).json({ error: err.message })
   }
 }

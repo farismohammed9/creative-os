@@ -1,7 +1,7 @@
 export const config = {
   api: {
     bodyParser: {
-      sizeLimit: '20mb',
+      sizeLimit: '10mb',
     },
   },
 }
@@ -27,10 +27,16 @@ export default async function handler(req, res) {
   if (!prompt) return res.status(400).json({ error: 'prompt is required' })
 
   const userContent = []
-  for (const img of images.slice(0, 6)) {
+
+  for (const img of images.slice(0, 4)) {
+    // images arrive as compressed base64 strings (not data URLs) from the client
     const dataUrl = img.startsWith('data:') ? img : `data:image/jpeg;base64,${img}`
-    userContent.push({ type: 'image_url', image_url: { url: dataUrl, detail: 'low' } })
+    userContent.push({
+      type: 'image_url',
+      image_url: { url: dataUrl, detail: 'low' },
+    })
   }
+
   userContent.push({ type: 'text', text: prompt })
 
   const messages = []
@@ -40,18 +46,23 @@ export default async function handler(req, res) {
   try {
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
       body: JSON.stringify({ model: 'gpt-4o', max_tokens: 2000, messages }),
     })
 
     const raw = await response.text()
     let data
     try { data = JSON.parse(raw) } catch (e) {
-      return res.status(500).json({ error: `Non-JSON response from OpenAI: ${raw.substring(0, 200)}` })
+      return res.status(500).json({ error: `Non-JSON from OpenAI: ${raw.substring(0, 200)}` })
     }
 
     if (!response.ok) {
-      return res.status(response.status).json({ error: data?.error?.message || 'OpenAI API error', details: data })
+      return res.status(response.status).json({
+        error: data?.error?.message || 'OpenAI API error',
+      })
     }
 
     const text = data.choices?.[0]?.message?.content

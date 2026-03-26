@@ -1,5 +1,23 @@
 import { useState, useRef } from "react";
 
+// Compress image to max 800px wide, JPEG quality 0.7 — keeps payload under 100KB per image
+async function compressImage(dataUrl, maxWidth = 800, quality = 0.7) {
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => {
+      const canvas = document.createElement('canvas')
+      const ratio = Math.min(1, maxWidth / img.width)
+      canvas.width = Math.round(img.width * ratio)
+      canvas.height = Math.round(img.height * ratio)
+      const ctx = canvas.getContext('2d')
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+      resolve(canvas.toDataURL('image/jpeg', quality))
+    }
+    img.onerror = () => resolve(dataUrl) // fallback to original on error
+    img.src = dataUrl
+  })
+}
+
 // ─── API LAYER ────────────────────────────────────────────────────────────────
 // All calls go through /api/* — Vercel serverless functions inject the keys.
 // In local dev, vite.config.js proxies /api → localhost:3000 (or just use vercel dev).
@@ -301,7 +319,10 @@ const UploadZone = ({ images, onImages, label, hint }) => {
     const arr = Array.from(files).filter(f => f.type.startsWith("image/"))
     Promise.all(arr.map(f => new Promise(resolve => {
       const r = new FileReader()
-      r.onload = e => resolve({ url: e.target.result, name: f.name })
+      r.onload = async e => {
+        const compressed = await compressImage(e.target.result)
+        resolve({ url: compressed, name: f.name })
+      }
       r.readAsDataURL(f)
     }))).then(imgs => onImages([...images, ...imgs]))
   }
@@ -393,6 +414,10 @@ Be authoritative. Do not flatter. Do not hedge.`
       .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
       .join("\n")
 
+    const websiteContext = scanResult
+      ? `\n\nWEBSITE SCAN DATA (from ${websiteUrl} — use as additional context, the human's own answers take priority):\n${Object.entries(scanResult).map(([k,v]) => `${k}: ${v}`).join("\n")}`
+      : ""
+
     try {
       let result
 
@@ -400,10 +425,10 @@ Be authoritative. Do not flatter. Do not hedge.`
         // Use GPT-4o vision for image-aware brand analysis
         const imageUrls = images.slice(0, 6).map(img => img.url)
         const prompt = `Brand questionnaire (${brandType} brand):\n\n${filledAnswers}\n\n${images.length} reference images uploaded above. Analyse answers AND images together.`
-        result = await callVision(imageUrls, prompt, BRAND_SYSTEM)
+        result = await callVision(imageUrls, prompt + websiteContext, BRAND_SYSTEM)
       } else {
         result = await callClaude(
-          [{ role: "user", content: `Brand questionnaire (${brandType} brand):\n\n${filledAnswers}` }],
+          [{ role: "user", content: `Brand questionnaire (${brandType} brand):\n\n${filledAnswers}${websiteContext}` }],
           BRAND_SYSTEM,
           2000
         )
@@ -468,12 +493,8 @@ Be authoritative. Do not flatter. Do not hedge.`
     try {
       const data = await scanWebsite(websiteUrl)
       setScanResult(data)
-      // Auto-fill answers from scan
-      const updates = {}
-      if (data.brand_name && !answers.name) updates.name = data.brand_name
-      if (data.category && !answers.category) updates.category = data.category
-      if (data.target_signals && !answers.target_customer) updates.target_customer = data.target_signals
-      if (Object.keys(updates).length > 0) setAnswers(p => ({ ...p, ...updates }))
+      // Store as context only — do not pre-fill form fields
+      // scanResult is passed into generateProfile as additional context
     } catch (e) { setScanError(e.message) }
     setScanning(false)
   }
@@ -503,7 +524,7 @@ Be authoritative. Do not flatter. Do not hedge.`
           {scanError && <div style={{ marginTop: 10, fontSize: 13, color: 'var(--red)' }}>{scanError}</div>}
           {scanResult && (
             <div style={{ marginTop: 14, padding: '14px 16px', background: 'var(--white)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
-              <div style={{ fontSize: 10, letterSpacing: 2, textTransform: 'uppercase', color: 'var(--green)', fontWeight: 600, marginBottom: 10 }}>✓ Scanned — fields pre-filled below</div>
+              <div style={{ fontSize: 10, letterSpacing: 2, textTransform: 'uppercase', color: 'var(--green)', fontWeight: 600, marginBottom: 10 }}>✓ Website scanned — stored as context for your brand profile</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 {Object.entries(scanResult).filter(([,v]) => v && v !== 'N/A' && v !== 'Unknown').map(([k, v]) => (
                   <div key={k} style={{ fontSize: 12 }}>
