@@ -17,24 +17,6 @@ async function compressImage(dataUrl, maxWidth = 800, quality = 0.7) {
   })
 }
 
-// Compress image to max 800px wide, JPEG quality 0.7 — keeps payload under 100KB per image
-async function compressImage(dataUrl, maxWidth = 800, quality = 0.7) {
-  return new Promise((resolve) => {
-    const img = new Image()
-    img.onload = () => {
-      const canvas = document.createElement('canvas')
-      const ratio = Math.min(1, maxWidth / img.width)
-      canvas.width = Math.round(img.width * ratio)
-      canvas.height = Math.round(img.height * ratio)
-      const ctx = canvas.getContext('2d')
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
-      resolve(canvas.toDataURL('image/jpeg', quality))
-    }
-    img.onerror = () => resolve(dataUrl) // fallback to original on error
-    img.src = dataUrl
-  })
-}
-
 // ─── API LAYER ────────────────────────────────────────────────────────────────
 // All calls go through /api/* — Vercel serverless functions inject the keys.
 // In local dev, vite.config.js proxies /api → localhost:3000 (or just use vercel dev).
@@ -88,14 +70,6 @@ async function scanWebsite(url) {
   try { data = JSON.parse(raw) } catch (e) {
     throw new Error(`Server error: ${raw.substring(0, 150)}`)
   }
-  if (!res.ok) throw new Error(data?.error || `Scan error ${res.status}`)
-  return data.data
-}
-
-async function scanWebsite(url) {
-  const res = await fetch('/api/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) })
-  const raw = await res.text()
-  let data; try { data = JSON.parse(raw) } catch(e) { throw new Error(`Server error: ${raw.substring(0,150)}`) }
   if (!res.ok) throw new Error(data?.error || `Scan error ${res.status}`)
   return data.data
 }
@@ -438,8 +412,6 @@ Be authoritative. Do not flatter. Do not hedge.`
       .filter(([, v]) => v && (Array.isArray(v) ? v.length : String(v).trim()))
       .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
       .join("\n")
-    const websiteContext = scanResult ? `\n\nWEBSITE SCAN (${websiteUrl} — context only, answers take priority):\n${Object.entries(scanResult).map(([k,v])=>`${k}: ${v}`).join("\n")}` : ""
-
     const websiteContext = scanResult
       ? `\n\nWEBSITE SCAN DATA (from ${websiteUrl} — use as additional context, the human's own answers take priority):\n${Object.entries(scanResult).map(([k,v]) => `${k}: ${v}`).join("\n")}`
       : ""
