@@ -15,23 +15,46 @@ async function callClaude(messages, systemPrompt, maxTokens = 1500) {
       messages,
     }),
   })
-  const data = await res.json()
-  if (!res.ok) throw new Error(data?.error || `API error ${res.status}`)
+  // Read as text first — avoids crash if response is not JSON
+  const raw = await res.text()
+  let data
+  try { data = JSON.parse(raw) } catch (e) {
+    throw new Error(`Server error: ${raw.substring(0, 150)}`)
+  }
+  if (!res.ok) throw new Error(data?.error || data?.details?.error?.message || `API error ${res.status}`)
   const text = data.content?.[0]?.text
-  if (!text) throw new Error('Empty response')
+  if (!text) throw new Error('Empty response from Claude')
   return text
 }
 
-// GPT-4o vision — handles image understanding
 async function callVision(images, prompt, systemPrompt) {
   const res = await fetch('/api/vision', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ images, prompt, systemPrompt }),
   })
-  const data = await res.json()
+  const raw = await res.text()
+  let data
+  try { data = JSON.parse(raw) } catch (e) {
+    throw new Error(`Server error: ${raw.substring(0, 150)}`)
+  }
   if (!res.ok) throw new Error(data?.error || `Vision API error ${res.status}`)
   return data.text
+}
+
+async function scanWebsite(url) {
+  const res = await fetch('/api/scan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  })
+  const raw = await res.text()
+  let data
+  try { data = JSON.parse(raw) } catch (e) {
+    throw new Error(`Server error: ${raw.substring(0, 150)}`)
+  }
+  if (!res.ok) throw new Error(data?.error || `Scan error ${res.status}`)
+  return data.data
 }
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
@@ -340,6 +363,10 @@ function BrandOnboarding({ brand, setBrand }) {
   const [error, setError] = useState(null)
   const [profile, setProfile] = useState(brand?.profile || null)
   const [notif, setNotif] = useState(null)
+  const [websiteUrl, setWebsiteUrl] = useState("")
+  const [scanning, setScanning] = useState(false)
+  const [scanResult, setScanResult] = useState(null)
+  const [scanError, setScanError] = useState(null)
 
   const questions = brandType === "new" ? BRAND_QUESTIONS_NEW : BRAND_QUESTIONS_EXISTING
   const showNotif = msg => { setNotif(msg); setTimeout(() => setNotif(null), 3000) }
@@ -435,6 +462,22 @@ Be authoritative. Do not flatter. Do not hedge.`
     </div>
   )
 
+  const handleScan = async () => {
+    if (!websiteUrl) return
+    setScanning(true); setScanError(null); setScanResult(null)
+    try {
+      const data = await scanWebsite(websiteUrl)
+      setScanResult(data)
+      // Auto-fill answers from scan
+      const updates = {}
+      if (data.brand_name && !answers.name) updates.name = data.brand_name
+      if (data.category && !answers.category) updates.category = data.category
+      if (data.target_signals && !answers.target_customer) updates.target_customer = data.target_signals
+      if (Object.keys(updates).length > 0) setAnswers(p => ({ ...p, ...updates }))
+    } catch (e) { setScanError(e.message) }
+    setScanning(false)
+  }
+
   if (step === "questions") return (
     <div>
       <div className="page-header">
@@ -443,6 +486,36 @@ Be authoritative. Do not flatter. Do not hedge.`
         <p>Designed by the world's best brand strategists. Every answer shapes your creative foundation. Don't rush them.</p>
       </div>
       <div className="page-content">
+
+        {/* WEBSITE SCANNER */}
+        <div className="card mb24" style={{ borderLeft: '3px solid var(--gold)', background: '#fffbf0' }}>
+          <div className="card-title" style={{ marginBottom: 4 }}>Have a website? Let us scan it first.</div>
+          <div className="card-sub" style={{ marginBottom: 16 }}>We'll pull your products, price points, copy tone, and customer signals — and pre-fill what we can.</div>
+          <div className="row">
+            <input type="text" placeholder="e.g. icedlondon.com or https://icedlondon.com"
+              value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)}
+              style={{ flex: 1 }} onKeyDown={e => e.key === 'Enter' && handleScan()} />
+            <button className="btn btn-gold" onClick={handleScan} disabled={scanning || !websiteUrl}>
+              {scanning ? 'Scanning...' : 'Scan site →'}
+            </button>
+          </div>
+          {scanning && <div className="loading-pulse mt8"><div className="pulse-dot"/><div className="pulse-dot"/><div className="pulse-dot"/><span>Reading your website...</span></div>}
+          {scanError && <div style={{ marginTop: 10, fontSize: 13, color: 'var(--red)' }}>{scanError}</div>}
+          {scanResult && (
+            <div style={{ marginTop: 14, padding: '14px 16px', background: 'var(--white)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
+              <div style={{ fontSize: 10, letterSpacing: 2, textTransform: 'uppercase', color: 'var(--green)', fontWeight: 600, marginBottom: 10 }}>✓ Scanned — fields pre-filled below</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                {Object.entries(scanResult).filter(([,v]) => v && v !== 'N/A' && v !== 'Unknown').map(([k, v]) => (
+                  <div key={k} style={{ fontSize: 12 }}>
+                    <span style={{ color: 'var(--ink3)', textTransform: 'uppercase', letterSpacing: 1, fontSize: 10 }}>{k.replace(/_/g,' ')} </span>
+                    <span style={{ color: 'var(--ink2)' }}>{String(v).substring(0, 80)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
         <div className="card">
           <QuestionForm questions={questions} answers={answers} onChange={(id, val) => setAnswers(p => ({ ...p, [id]: val }))} />
         </div>
